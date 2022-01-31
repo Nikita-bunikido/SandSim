@@ -9,6 +9,7 @@
 #define WINDOW_WIDTH    700
 
 #define GRAVITY 1
+#define COORDS_CONVERT(x,y) ((x)+(y)*WINDOW_WIDTH)
 
 typedef enum {
     CT_SAND,
@@ -25,7 +26,31 @@ typedef struct {
     bool updated;
 } Cell;
 
+typedef struct {
+    uint32_t posx, posy;
+    uint32_t sizex, sizey;
+    Color color;
+    bool frame;
+} button_t;
+
 Cell cells[WINDOW_HEIGHT * WINDOW_WIDTH];
+static Cell_type drawing_mode = CT_SAND;
+
+void draw_button (button_t *but){ DrawRectangle(but->posx, but->posy, but->sizex, but->sizey, but->color); if (but->frame) DrawRectangleLinesEx((Rectangle){but->posx, but->posy, but->sizex, but->sizey}, 3, BLACK); }
+bool mouse_in_button (button_t *but, Vector2 mouse_pos){
+    return ((mouse_pos.x >= but->posx && mouse_pos.x <= but->posx + but->sizex) &&
+        (mouse_pos.x >= but->posy && mouse_pos.y <= but->posy + but->sizey)) ? true : false;
+}
+button_t create_button (uint32_t px, uint32_t py, uint32_t sx, uint32_t sy, Color col){
+    button_t b;
+    b.color = col;
+    b.posx = px;
+    b.posy = py;
+    b.sizex = sx;
+    b.sizey = sy;
+    b.frame = false;
+    return b;
+}
 
 Cell create_cell (Color color, Cell_type type){
     return (Cell){
@@ -37,6 +62,12 @@ Cell create_cell (Color color, Cell_type type){
     };
 }
 
+Cell* get_cell (uint32_t posx, uint32_t posy){
+    assert(posx >= 0);
+    assert(posy < WINDOW_HEIGHT*WINDOW_WIDTH);
+    return cells + COORDS_CONVERT(posx,posy);
+}
+
 void draw_cells(void){
     for (uint32_t py = 0; py < WINDOW_HEIGHT; py++)
         for (uint32_t px = 0; px < WINDOW_WIDTH; px++)
@@ -44,54 +75,84 @@ void draw_cells(void){
 }
 
 void update_sand (uint32_t posx, uint32_t posy){
-    Cell *cur = &cells[(int)(posx+posy*WINDOW_WIDTH)];
+    Cell *cursor = get_cell(posx, posy);
+    assert(cursor->mat_id == CT_SAND);
 
-    assert(cur->mat_id == CT_SAND);
+    int8_t offset = GetRandomValue(0,1);
+    static const int8_t offsets[2][3] = {
+        {0, -1, 1},
+        {0, 1, -1}
+    };
+    int8_t water_attach = GetRandomValue(0,254);
 
-    int8_t offset = GetRandomValue(0, 1);
-    int8_t offsets[2][3] = {
+    /* 3 possible directions */
+    for (int8_t i = 0; i < 3; i++){
+        Cell *exp = get_cell(posx+offsets[offset][i], posy+1);
+        if (exp->mat_id == CT_AIR){
+            Cell tmp = *exp;
+            *exp = *cursor;
+            *cursor = tmp;
+            return;
+        } else if (water_attach && exp->mat_id == CT_WATER){
+            Cell tmp = *exp;
+            *exp = *cursor;
+            *cursor = tmp;
+            return;   
+        }
+    }
+}
+
+void update_water (uint32_t posx, uint32_t posy){
+    Cell *cursor = get_cell(posx, posy);
+    assert(cursor->mat_id == CT_WATER);
+
+    int8_t offset = GetRandomValue(0,1);
+    static const int8_t offsets[2][3] = {
         {0, -1, 1},
         {0, 1, -1}
     };
 
-    /* 3 possible directions */
-    for (int8_t i = 0; i < 3; i++){
-        size_t idx = (size_t)((posx+offsets[offset][i]) + (posy+1) * WINDOW_WIDTH);
-        Cell *ch = &cells[idx];
-        if (ch->mat_id == CT_AIR){
-            Cell tmp = *ch;
-            *ch = *cur;
-            *cur = tmp;
-            break;
+    for (int8_t oy = 1; oy >= 0; oy--)
+        for (int8_t ox = 0; ox < 2; ox++){
+            if (ox == 0 && oy == 0)
+                continue;
+            Cell *exp = get_cell(posx+offsets[offset][ox], posy+oy);
+            if (exp->mat_id == CT_AIR){
+                Cell tmp = *exp;
+                *exp = *cursor;
+                *cursor = tmp;
+                return;
+            }
         }
-    }
 }
 
 void update_cells (void){
     for (uint32_t py = WINDOW_HEIGHT-1; py > 0; py--)
         for (uint32_t px = 0; px < WINDOW_WIDTH; px++){
-            if (cells[px+py*WINDOW_WIDTH].updated)
+            Cell *cursor = get_cell(px,py);
+            if (cursor->updated)
                 continue;
             
-            cells[px+py*WINDOW_WIDTH].velocity += GRAVITY;
-            Cell_type mat_id = cells[px+py*WINDOW_WIDTH].mat_id;
-
-            switch (mat_id){
+            cursor->velocity += GRAVITY;
+            
+            switch (cursor->mat_id){
             case CT_SAND:
                 update_sand(px, py);
                 break;
+            case CT_WATER:
+                update_water(px, py);
             default:
                 break;
             }
             
-            cells[px+py*WINDOW_WIDTH].updated = true;
+            cursor->updated = true;
     }
 }
 
 void create_image_cells (Image *img, uint32_t ox, uint32_t oy){
     for (uint32_t py = 0; py < img->height; py++)
         for (uint32_t px = 0; px < img->width; px++){
-            cells[(px+ox)+(py+oy)*WINDOW_WIDTH] = create_cell(GetImageColor(*img, px, py), CT_SAND);
+            *get_cell(px+ox, py+oy) = create_cell(GetImageColor(*img, px, py), drawing_mode);
         }
 }
 
@@ -107,6 +168,13 @@ void create_circle_cells (Vector2 center, uint32_t radius){
 int main(){
     InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "real-time sand simulation");
     SetTargetFPS(60);
+
+    const uint32_t button_size = 20;
+    button_t buttons[2] = {
+        create_button(80, 5, button_size, button_size, (Color){222, 205, 111, 255}),
+        create_button(80 + button_size + 5, 5, button_size, button_size, (Color){86, 150, 219, 255})
+    };
+    bool button_pressed = false;
 
     #define IMAGES_COUNT    7
     Image images[IMAGES_COUNT];
@@ -148,17 +216,37 @@ int main(){
             BeginShaderMode(post);
                 DrawTextureRec(target.texture, (Rectangle){ 0, 0, (float)target.texture.width, (float)-target.texture.height }, (Vector2){ 0, 0 }, WHITE);
             EndShaderMode();
+            
+            for (int8_t i = 0; i < 2; i++){
+                draw_button(buttons+i);    
+            }
             DrawCircleLines(GetMouseX(), GetMouseY(), 10, MAROON);
             DrawFPS(0,0);
         EndDrawing();
 
+        Vector2 mouse_position = GetMousePosition();
+        
+        
+        /* cell type switching */
+        button_pressed = false;
+        for (int8_t i = 0; i < 2; i++){
+            buttons[i].frame = false;
+            if (IsMouseButtonDown(MOUSE_BUTTON_LEFT) && mouse_in_button(&buttons[i], mouse_position)){
+                    drawing_mode = (Cell_type[]){CT_SAND, CT_WATER}[i];
+                    button_pressed = true;
+                    buttons[i].frame = true;
+                }
+        }
+        if (button_pressed)
+            continue;
+
         if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)){
-            create_circle_cells(GetMousePosition(), 10);
+            create_circle_cells(mouse_position, 10);
         }
 
         for (uint8_t i = 0; i < IMAGES_COUNT; i++){
             if (IsKeyPressed("1234567"[i]))
-                create_image_cells(&images[i], (uint32_t)GetMouseX(), (uint32_t)GetMouseY());
+                create_image_cells(&images[i], (uint32_t)(mouse_position.x), (uint32_t)(mouse_position.y));
         }
 
         for (uint64_t i = 0; i < WINDOW_WIDTH * WINDOW_HEIGHT; i++)
